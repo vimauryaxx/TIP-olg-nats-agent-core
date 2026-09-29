@@ -79,12 +79,12 @@ func TestOnDisconnectNoOpWhenClosing(t *testing.T) {
 }
 
 func TestOnDisconnectForwardsErrorToSink(t *testing.T) {
-	var sinkErr error
+	sinkErrCh := make(chan error, 1)
 	hookFired := false
 	m := &Manager{
 		hooks: Hooks{
 			ErrorSink: func(err error) {
-				sinkErr = err
+				sinkErrCh <- err
 			},
 			OnDisconnected: func() {
 				hookFired = true
@@ -98,15 +98,47 @@ func TestOnDisconnectForwardsErrorToSink(t *testing.T) {
 	if !hookFired {
 		t.Fatal("expected OnDisconnected hook to be invoked")
 	}
-	if sinkErr == nil {
-		t.Fatal("expected disconnect error to be forwarded to ErrorSink")
+
+	select {
+	case sinkErr := <-sinkErrCh:
+		if sinkErr == nil {
+			t.Fatal("expected disconnect error to be forwarded to ErrorSink")
+		}
+		var rtErr *runtimeerr.Error
+		if !errors.As(sinkErr, &rtErr) {
+			t.Fatalf("expected runtimeerr.Error, got: %T", sinkErr)
+		}
+		if rtErr.Code != runtimeerr.CodeDisconnected {
+			t.Errorf("expected CodeDisconnected, got: %v", rtErr.Code)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for ErrorSink invocation")
 	}
-	var rtErr *runtimeerr.Error
-	if !errors.As(sinkErr, &rtErr) {
-		t.Fatalf("expected runtimeerr.Error, got: %T", sinkErr)
+}
+
+func TestOnDisconnectIndependentOfSlowErrorSink(t *testing.T) {
+	blockSink := make(chan struct{})
+	defer close(blockSink)
+
+	hookFiredCh := make(chan struct{}, 1)
+	m := &Manager{
+		hooks: Hooks{
+			ErrorSink: func(err error) {
+				<-blockSink
+			},
+			OnDisconnected: func() {
+				hookFiredCh <- struct{}{}
+			},
+		},
 	}
-	if rtErr.Code != runtimeerr.CodeDisconnected {
-		t.Errorf("expected CodeDisconnected, got: %v", rtErr.Code)
+
+	go m.onDisconnect(nil, errors.New("connection lost"))
+
+	select {
+	case <-hookFiredCh:
+		// Succeeded: OnDisconnected executed immediately without waiting on blocked ErrorSink
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("OnDisconnected hook was blocked or delayed by slow ErrorSink")
 	}
 }
 
