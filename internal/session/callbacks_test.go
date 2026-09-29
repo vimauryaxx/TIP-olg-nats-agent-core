@@ -128,7 +128,6 @@ func TestOnDisconnectInvokesRegisteredHookOutsideLock(t *testing.T) {
 	}
 }
 
-
 /*
 TC-SESSION-CALLBACKS-003
 Type: Positive
