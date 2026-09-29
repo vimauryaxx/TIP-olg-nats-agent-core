@@ -117,4 +117,3 @@ func TestSetDisconnectHandlerStoresCallback(t *testing.T) {
 		t.Fatalf("expected disconnect callback calls %d, got %d", 1, calls)
 	}
 }
-
