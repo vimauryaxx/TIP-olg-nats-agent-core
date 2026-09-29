@@ -11,12 +11,17 @@ import (
 
 func (m *Manager) onDisconnect(_ *nats.Conn, err error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if m.closing {
+		m.mu.Unlock()
 		return
 	}
 	m.setReconnectingLocked(err)
+	onDisconnected := m.hooks.OnDisconnected
+	m.mu.Unlock()
+
+	if onDisconnected != nil {
+		onDisconnected()
+	}
 }
 
 func (m *Manager) onReconnect(nc *nats.Conn) {
