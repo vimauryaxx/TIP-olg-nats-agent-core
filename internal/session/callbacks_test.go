@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Telecominfraproject/olg-nats-agent-core/internal/runtimeerr"
 	"github.com/nats-io/nats.go"
 )
 
@@ -52,7 +53,15 @@ Validates:
   - existing health state is preserved
 */
 func TestOnDisconnectNoOpWhenClosing(t *testing.T) {
-	m := &Manager{closing: true}
+	hookFired := false
+	m := &Manager{
+		closing: true,
+		hooks: Hooks{
+			OnDisconnected: func() {
+				hookFired = true
+			},
+		},
+	}
 	m.health.State = StateDraining
 	m.health.LastError = "existing"
 
@@ -64,7 +73,61 @@ func TestOnDisconnectNoOpWhenClosing(t *testing.T) {
 	if m.health.LastError != "existing" {
 		t.Fatalf("expected LastError to remain %q, got %q", "existing", m.health.LastError)
 	}
+	if hookFired {
+		t.Fatal("expected OnDisconnected hook not to fire when closing")
+	}
 }
+
+func TestOnDisconnectForwardsErrorToSink(t *testing.T) {
+	var sinkErr error
+	hookFired := false
+	m := &Manager{
+		hooks: Hooks{
+			ErrorSink: func(err error) {
+				sinkErr = err
+			},
+			OnDisconnected: func() {
+				hookFired = true
+			},
+		},
+	}
+
+	testErr := errors.New("connection reset by peer")
+	m.onDisconnect(nil, testErr)
+
+	if !hookFired {
+		t.Fatal("expected OnDisconnected hook to be invoked")
+	}
+	if sinkErr == nil {
+		t.Fatal("expected disconnect error to be forwarded to ErrorSink")
+	}
+	var rtErr *runtimeerr.Error
+	if !errors.As(sinkErr, &rtErr) {
+		t.Fatalf("expected runtimeerr.Error, got: %T", sinkErr)
+	}
+	if rtErr.Code != runtimeerr.CodeDisconnected {
+		t.Errorf("expected CodeDisconnected, got: %v", rtErr.Code)
+	}
+}
+
+func TestOnDisconnectInvokesRegisteredHookOutsideLock(t *testing.T) {
+	m := &Manager{}
+	done := make(chan struct{}, 1)
+	m.hooks.OnDisconnected = func() {
+		// Calling a lock-taking method will deadlock if m.mu is held during onDisconnect
+		m.SetReconnectHandler(nil)
+		done <- struct{}{}
+	}
+
+	go m.onDisconnect(nil, errors.New("network drop"))
+
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for OnDisconnected hook invocation (possible deadlock)")
+	}
+}
+
 
 /*
 TC-SESSION-CALLBACKS-003

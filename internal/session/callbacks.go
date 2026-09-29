@@ -19,6 +19,16 @@ func (m *Manager) onDisconnect(_ *nats.Conn, err error) {
 	onDisconnected := m.hooks.OnDisconnected
 	m.mu.Unlock()
 
+	if err != nil {
+		m.onAsyncError(&runtimeerr.Error{
+			Code:      runtimeerr.CodeDisconnected,
+			Op:        "session_disconnect",
+			Message:   "NATS session disconnected",
+			Retryable: true,
+			Err:       err,
+		})
+	}
+
 	if onDisconnected != nil {
 		onDisconnected()
 	}
