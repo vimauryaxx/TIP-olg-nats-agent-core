@@ -80,14 +80,14 @@ func TestOnDisconnectNoOpWhenClosing(t *testing.T) {
 
 func TestOnDisconnectForwardsErrorToSink(t *testing.T) {
 	sinkErrCh := make(chan error, 1)
-	hookFired := false
+	hookFiredCh := make(chan struct{}, 1)
 	m := &Manager{
 		hooks: Hooks{
 			ErrorSink: func(err error) {
 				sinkErrCh <- err
 			},
 			OnDisconnected: func() {
-				hookFired = true
+				hookFiredCh <- struct{}{}
 			},
 		},
 	}
@@ -95,7 +95,10 @@ func TestOnDisconnectForwardsErrorToSink(t *testing.T) {
 	testErr := errors.New("connection reset by peer")
 	m.onDisconnect(nil, testErr)
 
-	if !hookFired {
+	select {
+	case <-hookFiredCh:
+		// success
+	case <-time.After(1 * time.Second):
 		t.Fatal("expected OnDisconnected hook to be invoked")
 	}
 
@@ -139,6 +142,32 @@ func TestOnDisconnectIndependentOfSlowErrorSink(t *testing.T) {
 		// Succeeded: OnDisconnected executed immediately without waiting on blocked ErrorSink
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("OnDisconnected hook was blocked or delayed by slow ErrorSink")
+	}
+}
+
+func TestOnDisconnectDoesNotBlockNATSCallbacks(t *testing.T) {
+	blockHook := make(chan struct{})
+	defer close(blockHook)
+
+	m := &Manager{
+		hooks: Hooks{
+			OnDisconnected: func() {
+				<-blockHook
+			},
+		},
+	}
+
+	disconnectReturned := make(chan struct{}, 1)
+	go func() {
+		m.onDisconnect(nil, errors.New("connection dropped"))
+		disconnectReturned <- struct{}{}
+	}()
+
+	select {
+	case <-disconnectReturned:
+		// Succeeded: onDisconnect returned immediately and did not block on user callback
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("onDisconnect blocked waiting for slow user disconnect hook")
 	}
 }
 
